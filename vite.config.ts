@@ -5,8 +5,10 @@ import { defineConfig } from 'vite';
 
 export default defineConfig(() => {
   return {
-    base: '/Portal2026/',
+    base: '/hather2026/',
     plugins: [react(), tailwindcss()],
+  };
+});
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
