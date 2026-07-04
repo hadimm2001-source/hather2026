@@ -159,6 +159,9 @@ export default function App() {
   // UI Navigation / Filter state
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
   const [selectedMonth, setSelectedMonth] = useState<string>('all');
+  const [selectedPeriodType, setSelectedPeriodType] = useState<'month' | 'range'>('month');
+  const [selectedStartDate, setSelectedStartDate] = useState<string>('');
+  const [selectedEndDate, setSelectedEndDate] = useState<string>('');
   const [selectedEmployee, setSelectedEmployee] = useState<string>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState<string>('');
@@ -166,11 +169,15 @@ export default function App() {
   // Monthly Report interactive selections
   const [monthlyEmployee, setMonthlyEmployee] = useState<string>('all');
   const [monthlyMonth, setMonthlyMonth] = useState<string>('all');
+  const [monthlyPeriodType, setMonthlyPeriodType] = useState<'month' | 'range'>('month');
+  const [monthlyStartDate, setMonthlyStartDate] = useState<string>('');
+  const [monthlyEndDate, setMonthlyEndDate] = useState<string>('');
   const [detailCardFilter, setDetailCardFilter] = useState<string | null>(null);
+  const [comprehensiveSearch, setComprehensiveSearch] = useState<string>('');
 
   useEffect(() => {
     setDetailCardFilter(null);
-  }, [monthlyEmployee, monthlyMonth]);
+  }, [monthlyEmployee, monthlyMonth, monthlyPeriodType, monthlyStartDate, monthlyEndDate]);
 
   // Custom modals/popups
   const [modalOpen, setModalOpen] = useState(false);
@@ -749,6 +756,9 @@ export default function App() {
     setMessageLogs([]);
     setSelectedEmployee('all');
     setSelectedMonth('all');
+    setSelectedPeriodType('month');
+    setSelectedStartDate('');
+    setSelectedEndDate('');
     setSelectedStatus('all');
     setSearchTerm('');
     setMonthlyEmployee('all');
@@ -845,12 +855,20 @@ export default function App() {
 
   const filterDailyRecords = (records: ParsedRow[]) => {
     return records.filter(r => {
-      const matchMonth = selectedMonth === 'all' || r.month === selectedMonth;
+      let matchMonth = true;
+      if (selectedPeriodType === 'range') {
+        const dk = dateKey(r.date);
+        const matchStart = !selectedStartDate || dk >= selectedStartDate;
+        const matchEnd = !selectedEndDate || dk <= selectedEndDate;
+        matchMonth = matchStart && matchEnd;
+      } else {
+        matchMonth = selectedMonth === 'all' || r.month === selectedMonth;
+      }
       const matchEmployee = selectedEmployee === 'all' || r.name === selectedEmployee;
       const matchSearch = searchTerm === '' ||
         normKey(r.name).includes(normKey(searchTerm)) ||
         normKey(r.job).includes(normKey(searchTerm)) ||
-        normKey(r.civil).includes(normKey(searchTerm));
+        normKey(r.civil || '').includes(normKey(searchTerm));
 
       let matchStatus = true;
       if (selectedStatus === 'early') {
@@ -870,6 +888,100 @@ export default function App() {
   };
 
   const filterMonthlySummaries = (summaries: EmployeeSummary[]) => {
+    if (selectedPeriodType === 'range') {
+      // Dynamically compute range-based summaries directly from dailyRecords matching range & filters
+      const matchingDaily = dailyRecords.filter(r => {
+        const dk = dateKey(r.date);
+        const matchStart = !selectedStartDate || dk >= selectedStartDate;
+        const matchEnd = !selectedEndDate || dk <= selectedEndDate;
+        const matchEmployee = selectedEmployee === 'all' || r.name === selectedEmployee;
+        const matchSearch = searchTerm === '' ||
+          normKey(r.name).includes(normKey(searchTerm)) ||
+          normKey(r.job).includes(normKey(searchTerm)) ||
+          normKey(r.civil || '').includes(normKey(searchTerm));
+        
+        return matchStart && matchEnd && matchEmployee && matchSearch;
+      });
+
+      const empMap = new Map<string, EmployeeSummary>();
+      matchingDaily.forEach(r => {
+        if (!empMap.has(r.name)) {
+          empMap.set(r.name, {
+            name: r.name,
+            job: r.job,
+            civil: r.civil,
+            month: `من ${selectedStartDate || 'البداية'} إلى ${selectedEndDate || 'النهاية'}`,
+            work: 0,
+            present: 0,
+            absence: 0,
+            excuse: 0,
+            lateCount: 0,
+            lateMins: 0,
+            completeCount: 0,
+            earlyCount: 0,
+            earlyMins: 0,
+            autoCount: 0,
+            missingCheckoutCount: 0,
+          });
+        }
+        const s = empMap.get(r.name)!;
+        s.work++;
+        if (r.type === 'present') {
+          s.present++;
+          if (r.late > 0) {
+            s.lateCount++;
+            s.lateMins += r.late;
+          }
+          if (r.checkout === 'مكتمل' || r.checkout === 'انصراف في غير وقت الفعلي') {
+            s.completeCount++;
+          }
+          if (r.checkout === 'انصراف مبكر') {
+            s.earlyCount++;
+            s.earlyMins += r.earlyMins || 0;
+          }
+          if (r.checkout === 'انصراف تلقائي') {
+            s.autoCount++;
+          }
+          if (r.checkout === 'لا توجد بصمة انصراف') {
+            s.missingCheckoutCount++;
+          }
+        } else if (r.type === 'excuse') {
+          s.excuse++;
+        } else if (r.type === 'absence') {
+          s.absence++;
+        }
+      });
+
+      const rangeSummaries = Array.from(empMap.values()).map(m => {
+        const attendanceRate = m.work ? Math.round(((m.present + m.excuse) / m.work) * 100) : 0;
+        const classification = disciplineClassify(m);
+        return {
+          ...m,
+          attendanceRate,
+          rate: classification.score,
+          rating: classification.disciplineLabel,
+          disciplineCategory: classification.disciplineCategory,
+          disciplineReason: classification.reason,
+        };
+      });
+
+      return rangeSummaries.filter(s => {
+        let matchStatus = true;
+        if (selectedStatus === 'early') {
+          matchStatus = s.earlyCount > 0;
+        } else if (selectedStatus === 'late') {
+          matchStatus = s.lateCount > 0;
+        } else if (selectedStatus === 'absence') {
+          matchStatus = s.absence > 0;
+        } else if (selectedStatus === 'auto') {
+          matchStatus = s.autoCount > 0;
+        } else if (selectedStatus === 'missingCheckout') {
+          matchStatus = s.missingCheckoutCount > 0;
+        }
+        return matchStatus;
+      });
+    }
+
     return summaries.filter(s => {
       const matchMonth = selectedMonth === 'all' || s.month === selectedMonth;
       const matchEmployee = selectedEmployee === 'all' || s.name === selectedEmployee;
@@ -1117,15 +1229,41 @@ export default function App() {
   const currentEmpSummaryInAbsence = getAggregatedActiveSummaries().find(s => s.name === selectedEmployee);
 
   // 8. Individual aggregate generator
-  const getIndividualReport = (name: string, month: string) => {
-    const records = dailyRecords.filter(r =>
-      (name === 'all' || r.name === name) && (month === 'all' || r.month === month)
-    );
+  const getIndividualReport = (
+    name: string, 
+    month: string, 
+    customStartDate?: string, 
+    customEndDate?: string
+  ) => {
+    const records = dailyRecords.filter(r => {
+      const matchName = name === 'all' || r.name === name;
+      let matchPeriod = true;
+      if (customStartDate || customEndDate) {
+        const dk = dateKey(r.date);
+        const matchStart = !customStartDate || dk >= customStartDate;
+        const matchEnd = !customEndDate || dk <= customEndDate;
+        matchPeriod = matchStart && matchEnd;
+      } else {
+        matchPeriod = month === 'all' || r.month === month;
+      }
+      return matchName && matchPeriod;
+    });
+
+    const formatRangeDate = (dk: string) => {
+      if (!dk) return '';
+      const parts = dk.split('-');
+      if (parts.length === 3) {
+        return `${parts[2]}-${parts[1]}-${parts[0]}`;
+      }
+      return dk;
+    };
 
     const summary: EmployeeSummary = {
       name: name === 'all' ? 'جميع الموظفين' : name,
       job: '',
-      month: month === 'all' ? 'كل الأشهر' : month,
+      month: (customStartDate || customEndDate)
+        ? `الفترة من ${formatRangeDate(customStartDate) || 'البداية'} إلى ${formatRangeDate(customEndDate) || 'النهاية'}`
+        : (month === 'all' ? 'كل الأشهر' : month),
       work: records.length,
       present: 0,
       absence: 0,
@@ -1216,11 +1354,250 @@ export default function App() {
 
   const handlePrintReport = () => {
     if (monthlyEmployee === 'all') {
-      alert('الرجاء اختيار اسم الموظف أولاً لعرض وطباعة التقرير المتكامل.');
+      const allReports = employees.map(e => {
+        return monthlyPeriodType === 'range'
+          ? getIndividualReport(e.name, 'all', monthlyStartDate, monthlyEndDate)
+          : getIndividualReport(e.name, monthlyMonth);
+      });
+
+      const totalEmployees = allReports.length;
+      const totalWorkDays = allReports.reduce((acc, r) => acc + r.summary.work, 0);
+      const totalPresent = allReports.reduce((acc, r) => acc + r.summary.present, 0);
+      const totalAbsence = allReports.reduce((acc, r) => acc + r.summary.absence, 0);
+      const totalExcuse = allReports.reduce((acc, r) => acc + r.summary.excuse, 0);
+      const totalLateCount = allReports.reduce((acc, r) => acc + r.summary.lateCount, 0);
+      const totalLateMins = allReports.reduce((acc, r) => acc + r.summary.lateMins, 0);
+      const totalEarlyCount = allReports.reduce((acc, r) => acc + r.summary.earlyCount, 0);
+      const totalAutoCount = allReports.reduce((acc, r) => acc + r.summary.autoCount, 0);
+
+      const avgAttendanceRate = totalEmployees > 0 
+        ? Math.round(allReports.reduce((acc, r) => acc + (r.summary.attendanceRate || 0), 0) / totalEmployees) 
+        : 0;
+
+      const avgDisciplineRate = totalEmployees > 0 
+        ? Math.round(allReports.reduce((acc, r) => acc + (r.summary.rate || 0), 0) / totalEmployees) 
+        : 0;
+
+      const periodLabel = monthlyPeriodType === 'range'
+        ? `الفترة من ${monthlyStartDate || 'البداية'} إلى ${monthlyEndDate || 'النهاية'}`
+        : (monthlyMonth === 'all' ? 'جميع الأشهر المسجلة' : monthlyMonth);
+
+      const printWindow = window.open('', '_blank', 'width=1100,height=850');
+      if (!printWindow) {
+        alert('الرجاء السماح بالنوافذ المنبثقة للطباعة.');
+        return;
+      }
+
+      const printHtml = `
+        <!doctype html>
+        <html lang="ar" dir="rtl">
+        <head>
+          <meta charset="utf-8">
+          <title>التقرير الشامل لحضور وانضباط منسوبي المدرسة</title>
+          <style>
+            @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap');
+            body {
+              font-family: 'Tajawal', sans-serif;
+              color: #1e293b;
+              margin: 30px;
+              direction: rtl;
+              text-align: right;
+              line-height: 1.5;
+            }
+            .report-header {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              border-bottom: 3px solid #0f766e;
+              padding-bottom: 15px;
+              margin-bottom: 25px;
+            }
+            .school-info {
+              font-size: 13px;
+              font-weight: bold;
+            }
+            .report-title {
+              text-align: center;
+              font-size: 20px;
+              color: #0f766e;
+              font-weight: 800;
+            }
+            .stats-grid {
+              display: grid;
+              grid-template-columns: repeat(4, 1fr);
+              gap: 10px;
+              margin-bottom: 20px;
+            }
+            .stat-card {
+              background-color: #f8fafc;
+              border: 1px solid #cbd5e1;
+              border-radius: 8px;
+              padding: 10px;
+              text-align: center;
+            }
+            .stat-label {
+              font-size: 10px;
+              color: #64748b;
+              font-weight: bold;
+            }
+            .stat-val {
+              font-size: 18px;
+              font-weight: 800;
+              color: #0f766e;
+              margin-top: 2px;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              margin-top: 10px;
+              margin-bottom: 25px;
+              font-size: 11px;
+            }
+            th, td {
+              border: 1px solid #cbd5e1;
+              padding: 8px;
+              text-align: right;
+            }
+            th {
+              background-color: #0f766e;
+              color: white;
+              font-weight: bold;
+            }
+            tr:nth-child(even) {
+              background-color: #f8fafc;
+            }
+            .badge {
+              display: inline-block;
+              padding: 2px 6px;
+              border-radius: 999px;
+              font-size: 9px;
+              font-weight: bold;
+            }
+            .badge-green { background-color: #dcfce7; color: #166534; }
+            .badge-amber { background-color: #fef3c7; color: #92400e; }
+            .badge-red { background-color: #fee2e2; color: #991b1b; }
+            .badge-blue { background-color: #dbeafe; color: #1e40af; }
+            .signature-box {
+              margin-top: 40px;
+              display: flex;
+              justify-content: space-between;
+              font-size: 12px;
+            }
+            .sig-col {
+              text-align: center;
+              width: 220px;
+            }
+            @media print {
+              body { margin: 15px; }
+              .no-print { display: none; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="report-header">
+            <div class="school-info">
+              وزارة التعليم<br>
+              إدارة التعليم بالأحساء<br>
+              مدرسة الجشة المتوسطة
+            </div>
+            <div class="report-title">التقرير الشامل لحضور وانضباط منسوبي المدرسة</div>
+            <div class="school-info" style="text-align: left;">
+              التاريخ: ${new Date().toLocaleDateString('ar-SA')}<br>
+              الفترة: ${periodLabel}
+            </div>
+          </div>
+
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-label">إجمالي المنسوبين</div>
+              <div class="stat-val">${totalEmployees} موظف</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">متوسط نسبة الحضور والانتظام</div>
+              <div class="stat-val" style="color:#16a34a">${avgAttendanceRate}%</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">متوسط درجة الانضباط المدرسي</div>
+              <div class="stat-val" style="color:#0f766e">${avgDisciplineRate}%</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">إجمالي الغيابات والتأخيرات</div>
+              <div class="stat-val" style="color:#dc2626">${totalAbsence} غياب | ${totalLateCount} تأخر</div>
+            </div>
+          </div>
+
+          <h3>جدول رصد انضباط المعلمين والموظفين</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>المعلم / الموظف</th>
+                <th>المسمى الوظيفي</th>
+                <th style="text-align:center">أيام العمل</th>
+                <th style="text-align:center">حاضر</th>
+                <th style="text-align:center">غياب (عذر)</th>
+                <th style="text-align:center">غياب (بدون)</th>
+                <th style="text-align:center">مرات التأخر</th>
+                <th style="text-align:center">دقائق التأخر</th>
+                <th style="text-align:center">انصراف مبكر / تلقائي</th>
+                <th style="text-align:center">الدرجة</th>
+                <th style="text-align:center">التقييم</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${allReports.map(r => `
+                <tr>
+                  <td><b>${r.summary.name}</b></td>
+                  <td>${r.summary.job || 'غير محدد'}</td>
+                  <td style="text-align:center">${r.summary.work}</td>
+                  <td style="text-align:center" style="color:#166534">${r.summary.present}</td>
+                  <td style="text-align:center" style="color:#1e40af">${r.summary.excuse}</td>
+                  <td style="text-align:center" style="color:#991b1b">${r.summary.absence}</td>
+                  <td style="text-align:center">${r.summary.lateCount}</td>
+                  <td style="text-align:center">${r.summary.lateMins}</td>
+                  <td style="text-align:center">${r.summary.earlyCount + r.summary.autoCount}</td>
+                  <td style="text-align:center"><b>${r.summary.rate}%</b></td>
+                  <td style="text-align:center">
+                    <span class="badge ${
+                      (r.summary.rate || 0) >= 95 ? 'badge-green' :
+                      (r.summary.rate || 0) >= 85 ? 'badge-blue' :
+                      (r.summary.rate || 0) >= 75 ? 'badge-amber' : 'badge-red'
+                    }">${r.summary.rating || 'غير محدد'}</span>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+
+          <div class="signature-box">
+            <div class="sig-col">
+              <b>وكيل المدرسة لشؤون الطلاب والمنسوبين</b><br><br><br>
+              التوقيع: .......................................
+            </div>
+            <div class="sig-col">
+              <b>مدير مدرسة الجشة المتوسطة</b><br><br><br>
+              التوقيع: .......................................
+            </div>
+          </div>
+
+          <script>
+            window.onload = function() {
+              window.focus();
+              window.print();
+            }
+          <\/script>
+        </body>
+        </html>
+      `;
+
+      printWindow.document.open();
+      printWindow.document.write(printHtml);
+      printWindow.document.close();
       return;
     }
 
-    const rep = getIndividualReport(monthlyEmployee, monthlyMonth);
+    const rep = monthlyPeriodType === 'range'
+      ? getIndividualReport(monthlyEmployee, 'all', monthlyStartDate, monthlyEndDate)
+      : getIndividualReport(monthlyEmployee, monthlyMonth);
     const m = rep.summary;
 
     const printWindow = window.open('', '_blank', 'width=1000,height=800');
@@ -1458,11 +1835,116 @@ export default function App() {
 
   const handleExportWord = () => {
     if (monthlyEmployee === 'all') {
-      alert('الرجاء اختيار اسم الموظف أولاً لتصدير تقرير Word المخصص.');
+      const allReports = employees.map(e => {
+        return monthlyPeriodType === 'range'
+          ? getIndividualReport(e.name, 'all', monthlyStartDate, monthlyEndDate)
+          : getIndividualReport(e.name, monthlyMonth);
+      });
+
+      const totalEmployees = allReports.length;
+      const totalWorkDays = allReports.reduce((acc, r) => acc + r.summary.work, 0);
+      const totalPresent = allReports.reduce((acc, r) => acc + r.summary.present, 0);
+      const totalAbsence = allReports.reduce((acc, r) => acc + r.summary.absence, 0);
+      const totalExcuse = allReports.reduce((acc, r) => acc + r.summary.excuse, 0);
+      const totalLateCount = allReports.reduce((acc, r) => acc + r.summary.lateCount, 0);
+      const totalLateMins = allReports.reduce((acc, r) => acc + r.summary.lateMins, 0);
+      const totalEarlyCount = allReports.reduce((acc, r) => acc + r.summary.earlyCount, 0);
+      const totalAutoCount = allReports.reduce((acc, r) => acc + r.summary.autoCount, 0);
+
+      const avgAttendanceRate = totalEmployees > 0 
+        ? Math.round(allReports.reduce((acc, r) => acc + (r.summary.attendanceRate || 0), 0) / totalEmployees) 
+        : 0;
+
+      const avgDisciplineRate = totalEmployees > 0 
+        ? Math.round(allReports.reduce((acc, r) => acc + (r.summary.rate || 0), 0) / totalEmployees) 
+        : 0;
+
+      const periodLabel = monthlyPeriodType === 'range'
+        ? `الفترة من ${monthlyStartDate || 'البداية'} إلى ${monthlyEndDate || 'النهاية'}`
+        : (monthlyMonth === 'all' ? 'جميع الأشهر المسجلة' : monthlyMonth);
+
+      const wordHtml = `
+        <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+        <head>
+          <title>التقرير الشامل لحضور وانضباط منسوبي المدرسة</title>
+          <style>
+            body { font-family: 'Arial', sans-serif; direction: rtl; text-align: right; }
+            .header { border-bottom: 2px solid #0f766e; padding-bottom: 10px; margin-bottom: 20px; }
+            .table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+            .table th, .table td { border: 1px solid #999; padding: 8px; text-align: right; }
+            .table th { background-color: #0f766e; color: #ffffff; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h2>مدرسة الجشة المتوسطة - إدارة التعليم بالأحساء</h2>
+            <h3>التقرير الشامل لحضور وانضباط منسوبي المدرسة</h3>
+            <p>الفترة المشمولة بالتقرير: <b>${periodLabel}</b></p>
+            <p>تاريخ التصدير: ${new Date().toLocaleDateString('ar-SA')}</p>
+          </div>
+
+          <h3>المؤشرات العامة للجميع:</h3>
+          <ul>
+            <li>إجمالي عدد المعلمين والموظفين: ${totalEmployees}</li>
+            <li>متوسط نسبة الحضور والانتظام: ${avgAttendanceRate}%</li>
+            <li>متوسط درجة الانضباط المدرسي: ${avgDisciplineRate}%</li>
+            <li>إجمالي الغيابات بدون عذر: ${totalAbsence} يوم</li>
+            <li>إجمالي حالات التأخر الصباحي: ${totalLateCount} (بمجموع ${totalLateMins} دقيقة)</li>
+            <li>إجمالي حالات الخروج المبكر / الانصراف التلقائي: ${totalEarlyCount + totalAutoCount}</li>
+          </ul>
+
+          <h3>جدول رصد انضباط المعلمين والموظفين الشامل:</h3>
+          <table class="table">
+            <thead>
+              <tr>
+                <th>المعلم / الموظف</th>
+                <th>المسمى الوظيفي</th>
+                <th>أيام العمل</th>
+                <th>حضور</th>
+                <th>غياب بعذر</th>
+                <th>غياب بدون عذر</th>
+                <th>مرات التأخر</th>
+                <th>دقائق التأخر</th>
+                <th>خروج مبكر / تلقائي</th>
+                <th>درجة الانضباط</th>
+                <th>التصنيف والمؤشر</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${allReports.map(r => `
+                <tr>
+                  <td><b>${r.summary.name}</b></td>
+                  <td>${r.summary.job || 'غير محدد'}</td>
+                  <td>${r.summary.work}</td>
+                  <td>${r.summary.present}</td>
+                  <td>${r.summary.excuse}</td>
+                  <td>${r.summary.absence}</td>
+                  <td>${r.summary.lateCount}</td>
+                  <td>${r.summary.lateMins}</td>
+                  <td>${r.summary.earlyCount + r.summary.autoCount}</td>
+                  <td><b>${r.summary.rate}%</b></td>
+                  <td>${r.summary.rating || 'غير محدد'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </body>
+        </html>
+      `;
+
+      const blob = new Blob(['\ufeff' + wordHtml], { type: 'application/msword' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `التقرير_الشامل_للانضباط_والحضور_${periodLabel.replace(/\s+/g, '_')}.doc`;
+      a.click();
+      URL.revokeObjectURL(url);
       return;
     }
 
-    const rep = getIndividualReport(monthlyEmployee, monthlyMonth);
+    const rep = monthlyPeriodType === 'range'
+      ? getIndividualReport(monthlyEmployee, 'all', monthlyStartDate, monthlyEndDate)
+      : getIndividualReport(monthlyEmployee, monthlyMonth);
     const m = rep.summary;
 
     const wordHtml = `
@@ -2262,18 +2744,53 @@ export default function App() {
                   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-4">
                     <div className="flex flex-wrap items-center gap-3">
                       <div>
-                        <label className="block text-[10px] font-bold text-slate-400 mb-1">الشهر المستهدف</label>
+                        <label className="block text-[10px] font-bold text-slate-400 mb-1">تصفية الفترة حسب</label>
                         <select
-                          value={selectedMonth}
-                          onChange={(e) => setSelectedMonth(e.target.value)}
+                          value={selectedPeriodType}
+                          onChange={(e) => setSelectedPeriodType(e.target.value as 'month' | 'range')}
                           className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:border-teal-500 transition-all"
                         >
-                          <option value="all">كل الأشهر المسجلة</option>
-                          {getMonthsList().map(m => (
-                            <option key={m} value={m}>{m}</option>
-                          ))}
+                          <option value="month">📅 الشهر</option>
+                          <option value="range">🗓️ نطاق تاريخ</option>
                         </select>
                       </div>
+
+                      {selectedPeriodType === 'month' ? (
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-400 mb-1">الشهر المستهدف</label>
+                          <select
+                            value={selectedMonth}
+                            onChange={(e) => setSelectedMonth(e.target.value)}
+                            className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:border-teal-500 transition-all"
+                          >
+                            <option value="all">كل الأشهر المسجلة</option>
+                            {getMonthsList().map(m => (
+                              <option key={m} value={m}>{m}</option>
+                            ))}
+                          </select>
+                        </div>
+                      ) : (
+                        <>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-400 mb-1">من تاريخ</label>
+                            <input
+                              type="date"
+                              value={selectedStartDate}
+                              onChange={(e) => setSelectedStartDate(e.target.value)}
+                              className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-sm font-bold text-slate-700 outline-none focus:border-teal-500 transition-all h-[38px]"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-400 mb-1">إلى تاريخ</label>
+                            <input
+                              type="date"
+                              value={selectedEndDate}
+                              onChange={(e) => setSelectedEndDate(e.target.value)}
+                              className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-sm font-bold text-slate-700 outline-none focus:border-teal-500 transition-all h-[38px]"
+                            />
+                          </div>
+                        </>
+                      )}
 
                       <div>
                         <label className="block text-[10px] font-bold text-slate-400 mb-1">الموظف / المعلم</label>
@@ -2862,18 +3379,53 @@ export default function App() {
                   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-4">
                     <div className="flex flex-wrap items-center gap-3">
                       <div>
-                        <label className="block text-[10px] font-bold text-slate-400 mb-1">الشهر المستهدف</label>
+                        <label className="block text-[10px] font-bold text-slate-400 mb-1">تصفية الفترة حسب</label>
                         <select
-                          value={selectedMonth}
-                          onChange={(e) => setSelectedMonth(e.target.value)}
+                          value={selectedPeriodType}
+                          onChange={(e) => setSelectedPeriodType(e.target.value as 'month' | 'range')}
                           className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:border-teal-500 transition-all"
                         >
-                          <option value="all">كل الأشهر المسجلة</option>
-                          {getMonthsList().map(m => (
-                            <option key={m} value={m}>{m}</option>
-                          ))}
+                          <option value="month">📅 الشهر</option>
+                          <option value="range">🗓️ نطاق تاريخ</option>
                         </select>
                       </div>
+
+                      {selectedPeriodType === 'month' ? (
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-400 mb-1">الشهر المستهدف</label>
+                          <select
+                            value={selectedMonth}
+                            onChange={(e) => setSelectedMonth(e.target.value)}
+                            className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:border-teal-500 transition-all"
+                          >
+                            <option value="all">كل الأشهر المسجلة</option>
+                            {getMonthsList().map(m => (
+                              <option key={m} value={m}>{m}</option>
+                            ))}
+                          </select>
+                        </div>
+                      ) : (
+                        <>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-400 mb-1">من تاريخ</label>
+                            <input
+                              type="date"
+                              value={selectedStartDate}
+                              onChange={(e) => setSelectedStartDate(e.target.value)}
+                              className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-sm font-bold text-slate-700 outline-none focus:border-teal-500 transition-all h-[38px]"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-400 mb-1">إلى تاريخ</label>
+                            <input
+                              type="date"
+                              value={selectedEndDate}
+                              onChange={(e) => setSelectedEndDate(e.target.value)}
+                              className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-sm font-bold text-slate-700 outline-none focus:border-teal-500 transition-all h-[38px]"
+                            />
+                          </div>
+                        </>
+                      )}
 
                       <div>
                         <label className="block text-[10px] font-bold text-slate-400 mb-1">الموظف / المعلم</label>
@@ -2922,28 +3474,19 @@ export default function App() {
                           title="طباعة السجل الحالي بصيغة PDF"
                         >
                           <Printer className="w-4 h-4" />
-                          <span>طباعة PDF</span>
-                        </button>
-                        <button
-                          onClick={handleExportAttendanceListWord}
-                          className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-sm h-[38px]"
-                          title="تصدير السجل الحالي بصيغة Word"
-                        >
-                          <FileText className="w-4 h-4" />
-                          <span>تصدير Word</span>
+                          <span>طباعة</span>
                         </button>
                       </div>
                     </div>
                   </div>
 
-                  {/* ATTENDANCE RECORDS LIST */}
-                  <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                     <div className="overflow-x-auto">
-                      <table className="w-full text-right text-sm border-collapse">
+                      <table className="w-full text-right border-collapse">
                         <thead>
-                          <tr className="bg-slate-50 text-slate-600 border-b border-slate-200">
-                            <th className="p-3 font-bold">اسم المعلم / الموظف</th>
-                            <th className="p-3 font-bold">المسمى الوظيفي</th>
+                          <tr className="bg-slate-50 text-slate-700 text-xs border-b border-slate-200">
+                            <th className="p-3 font-bold text-right">المعلم / الموظف</th>
+                            <th className="p-3 font-bold text-right">الوظيفة</th>
                             <th className="p-3 font-bold text-center">التاريخ</th>
                             <th className="p-3 font-bold text-center">اليوم</th>
                             <th className="p-3 font-bold text-center">وقت الدخول</th>
@@ -3466,40 +4009,75 @@ export default function App() {
                   {/* COMPREHENSIVE SELECTION CONTROLS */}
                   <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                     <h3 className="text-base font-extrabold text-teal-950 mb-3">توليد تقرير الموظف المتكامل والدوري</h3>
-                    <div className="flex flex-wrap items-center gap-4">
-                      <div className="w-full md:w-80">
+                    <div className="flex flex-wrap items-end gap-4">
+                      <div className="w-full md:w-72">
                         <label className="block text-xs font-bold text-slate-500 mb-1.5">اختر الموظف المستهدف</label>
                         <select
                           value={monthlyEmployee}
                           onChange={(e) => setMonthlyEmployee(e.target.value)}
                           className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-bold text-slate-700 w-full outline-none focus:border-teal-500"
                         >
-                          <option value="all">اختر معلماً لعرض تقريره الفردي المتكامل...</option>
+                          <option value="all">📊 تقرير شامل لجميع المعلمين والموظفين</option>
                           {employees.map(e => (
                             <option key={e.name} value={e.name}>{e.name}</option>
                           ))}
                         </select>
                       </div>
 
-                      <div className="w-full md:w-48">
-                        <label className="block text-xs font-bold text-slate-500 mb-1.5">اختر الشهر</label>
+                      <div className="w-full md:w-44">
+                        <label className="block text-xs font-bold text-slate-500 mb-1.5">تصفية الفترة حسب</label>
                         <select
-                          value={monthlyMonth}
-                          onChange={(e) => setMonthlyMonth(e.target.value)}
+                          value={monthlyPeriodType}
+                          onChange={(e) => setMonthlyPeriodType(e.target.value as 'month' | 'range')}
                           className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-bold text-slate-700 w-full outline-none focus:border-teal-500"
                         >
-                          <option value="all">كل الأشهر المسجلة</option>
-                          {getMonthsList().map(m => (
-                            <option key={m} value={m}>{m}</option>
-                          ))}
+                          <option value="month">📅 الشهر</option>
+                          <option value="range">🗓️ نطاق تاريخ مخصص</option>
                         </select>
                       </div>
+
+                      {monthlyPeriodType === 'month' ? (
+                        <div className="w-full md:w-44">
+                          <label className="block text-xs font-bold text-slate-500 mb-1.5">اختر الشهر</label>
+                          <select
+                            value={monthlyMonth}
+                            onChange={(e) => setMonthlyMonth(e.target.value)}
+                            className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-bold text-slate-700 w-full outline-none focus:border-teal-500"
+                          >
+                            <option value="all">كل الأشهر المسجلة</option>
+                            {getMonthsList().map(m => (
+                              <option key={m} value={m}>{m}</option>
+                            ))}
+                          </select>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="w-full md:w-40">
+                            <label className="block text-xs font-bold text-slate-500 mb-1.5">من تاريخ (البدء)</label>
+                            <input
+                              type="date"
+                              value={monthlyStartDate}
+                              onChange={(e) => setMonthlyStartDate(e.target.value)}
+                              className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-700 w-full outline-none focus:border-teal-500 h-[42px]"
+                            />
+                          </div>
+                          <div className="w-full md:w-40">
+                            <label className="block text-xs font-bold text-slate-500 mb-1.5">إلى تاريخ (النهاية)</label>
+                            <input
+                              type="date"
+                              value={monthlyEndDate}
+                              onChange={(e) => setMonthlyEndDate(e.target.value)}
+                              className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-700 w-full outline-none focus:border-teal-500 h-[42px]"
+                            />
+                          </div>
+                        </>
+                      )}
 
                       <div className="flex items-end gap-2 mt-4 md:mt-0 w-full md:w-auto pt-4 md:pt-0">
                         <button
                           onClick={handlePrintReport}
-                          disabled={monthlyEmployee === 'all'}
-                          className="bg-teal-700 hover:bg-teal-800 disabled:bg-slate-200 text-white font-bold px-4 py-2.5 rounded-xl text-sm shadow-sm transition-all flex items-center gap-2"
+                          disabled={employees.length === 0}
+                          className="bg-teal-700 hover:bg-teal-800 disabled:bg-slate-200 text-white font-bold px-4 py-2.5 rounded-xl text-sm shadow-sm transition-all flex items-center gap-2 cursor-pointer"
                         >
                           <Printer className="w-4 h-4" />
                           <span>طباعة التقرير / PDF</span>
@@ -3507,8 +4085,8 @@ export default function App() {
 
                         <button
                           onClick={handleExportWord}
-                          disabled={monthlyEmployee === 'all'}
-                          className="bg-amber-600 hover:bg-amber-700 disabled:bg-slate-200 text-white font-bold px-4 py-2.5 rounded-xl text-sm shadow-sm transition-all flex items-center gap-2"
+                          disabled={employees.length === 0}
+                          className="bg-amber-600 hover:bg-amber-700 disabled:bg-slate-200 text-white font-bold px-4 py-2.5 rounded-xl text-sm shadow-sm transition-all flex items-center gap-2 cursor-pointer"
                         >
                           <FileDown className="w-4 h-4" />
                           <span>تصدير Word</span>
@@ -3518,12 +4096,174 @@ export default function App() {
                   </div>
 
                   {monthlyEmployee === 'all' ? (
-                    <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center text-slate-400 font-medium">
-                      يرجى تحديد المعلم أو الموظف من القائمة بالأعلى لتوليد واستعراض ملفه المتكامل، سجلاته اليومية، والدرجة التفصيلية.
-                    </div>
+                    (() => {
+                      const allReports = employees.map(e => {
+                        return monthlyPeriodType === 'range'
+                          ? getIndividualReport(e.name, 'all', monthlyStartDate, monthlyEndDate)
+                          : getIndividualReport(e.name, monthlyMonth);
+                      });
+
+                      const totalEmployees = allReports.length;
+                      const totalWorkDays = allReports.reduce((acc, r) => acc + r.summary.work, 0);
+                      const totalPresent = allReports.reduce((acc, r) => acc + r.summary.present, 0);
+                      const totalAbsence = allReports.reduce((acc, r) => acc + r.summary.absence, 0);
+                      const totalExcuse = allReports.reduce((acc, r) => acc + r.summary.excuse, 0);
+                      const totalLateCount = allReports.reduce((acc, r) => acc + r.summary.lateCount, 0);
+                      const totalLateMins = allReports.reduce((acc, r) => acc + r.summary.lateMins, 0);
+                      const totalEarlyCount = allReports.reduce((acc, r) => acc + r.summary.earlyCount, 0);
+                      const totalAutoCount = allReports.reduce((acc, r) => acc + r.summary.autoCount, 0);
+
+                      const avgAttendanceRate = totalEmployees > 0 
+                        ? Math.round(allReports.reduce((acc, r) => acc + (r.summary.attendanceRate || 0), 0) / totalEmployees) 
+                        : 0;
+
+                      const avgDisciplineRate = totalEmployees > 0 
+                        ? Math.round(allReports.reduce((acc, r) => acc + (r.summary.rate || 0), 0) / totalEmployees) 
+                        : 0;
+
+                      const filteredReports = allReports.filter(r => {
+                        if (!comprehensiveSearch) return true;
+                        const term = comprehensiveSearch.trim().toLowerCase();
+                        return r.summary.name.toLowerCase().includes(term) || (r.summary.job || '').toLowerCase().includes(term);
+                      });
+
+                      return (
+                        <div className="space-y-6" dir="rtl">
+                          {/* Aggregates Dashboard */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div className="bg-gradient-to-br from-teal-50 to-teal-100/30 p-5 rounded-2xl border border-teal-100 shadow-xs">
+                              <span className="text-xs text-slate-400 font-extrabold block mb-1">إجمالي منسوبي المدرسة</span>
+                              <div className="flex items-baseline gap-1.5">
+                                <span className="text-2xl font-black text-teal-950">{totalEmployees}</span>
+                                <span className="text-xs text-slate-500 font-bold">موظف ومعلم</span>
+                              </div>
+                            </div>
+
+                            <div className="bg-gradient-to-br from-emerald-50 to-emerald-100/30 p-5 rounded-2xl border border-emerald-100 shadow-xs">
+                              <span className="text-xs text-slate-400 font-extrabold block mb-1">متوسط نسبة الحضور والانتظام</span>
+                              <div className="flex items-baseline gap-1.5">
+                                <span className="text-2xl font-black text-emerald-700">{avgAttendanceRate}%</span>
+                                <span className="text-xs text-slate-500 font-bold">للفترة المحددة</span>
+                              </div>
+                            </div>
+
+                            <div className="bg-gradient-to-br from-blue-50 to-blue-100/30 p-5 rounded-2xl border border-blue-100 shadow-xs">
+                              <span className="text-xs text-slate-400 font-extrabold block mb-1">متوسط درجة الانضباط المدرسي</span>
+                              <div className="flex items-baseline gap-1.5">
+                                <span className="text-2xl font-black text-blue-700">{avgDisciplineRate}%</span>
+                                <span className="text-xs text-slate-500 font-bold">التقييم العام</span>
+                              </div>
+                            </div>
+
+                            <div className="bg-gradient-to-br from-rose-50 to-rose-100/30 p-5 rounded-2xl border border-rose-100 shadow-xs">
+                              <span className="text-xs text-slate-400 font-extrabold block mb-1">إجمالي الغياب والتأخر الصباحي</span>
+                              <div className="flex items-baseline gap-1.5">
+                                <span className="text-xl font-black text-rose-700">{totalAbsence} غياب</span>
+                                <span className="text-xs text-slate-400 font-bold">|</span>
+                                <span className="text-xl font-black text-amber-600">{totalLateCount} تأخر</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Unified Table view */}
+                          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                            <div className="p-4 border-b border-slate-200 bg-slate-50/50 flex flex-wrap items-center justify-between gap-4">
+                              <div>
+                                <h4 className="text-sm font-extrabold text-teal-950">بيانات الحضور التفصيلية والدرجات لعموم المنسوبين</h4>
+                                <p className="text-[11px] text-slate-400 mt-0.5">انقر على اسم أي موظف أو على زر "التفاصيل" لاستعراض تقريره الفردي وسجل بصماته اليومي.</p>
+                              </div>
+                              
+                              <div className="w-full md:w-72">
+                                <input
+                                  type="text"
+                                  placeholder="🔍 ابحث بالاسم أو المسمى الوظيفي..."
+                                  value={comprehensiveSearch}
+                                  onChange={(e) => setComprehensiveSearch(e.target.value)}
+                                  className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs w-full outline-none font-bold text-slate-700 focus:border-teal-500 transition-all shadow-xs"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-right text-xs border-collapse">
+                                <thead>
+                                  <tr className="bg-slate-50/30 text-slate-500 border-b border-slate-200">
+                                    <th className="p-3.5 font-bold">المعلم / الموظف</th>
+                                    <th className="p-3.5 font-bold">المسمى الوظيفي</th>
+                                    <th className="p-3.5 font-bold text-center">أيام العمل</th>
+                                    <th className="p-3.5 font-bold text-center text-emerald-700">الحضور</th>
+                                    <th className="p-3.5 font-bold text-center text-blue-700">غياب بعذر</th>
+                                    <th className="p-3.5 font-bold text-center text-rose-700">غياب بدون عذر</th>
+                                    <th className="p-3.5 font-bold text-center">حالات التأخر</th>
+                                    <th className="p-3.5 font-bold text-center">دقائق التأخر</th>
+                                    <th className="p-3.5 font-bold text-center">انصراف مبكر/تلقائي</th>
+                                    <th className="p-3.5 font-bold text-center">درجة الانضباط</th>
+                                    <th className="p-3.5 font-bold text-center">المؤشر والتقييم</th>
+                                    <th className="p-3.5 font-bold text-center">الإجراءات</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {filteredReports.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={12} className="p-8 text-center text-slate-400 font-bold">
+                                        لا توجد نتائج مطابقة لعملية البحث.
+                                      </td>
+                                    </tr>
+                                  ) : (
+                                    filteredReports.map((r) => (
+                                      <tr key={r.summary.name} className="border-b border-slate-100 hover:bg-slate-50/50 transition-all">
+                                        <td className="p-3 font-bold text-slate-800">
+                                          <button
+                                            onClick={() => setMonthlyEmployee(r.summary.name)}
+                                            className="hover:text-teal-600 transition-all font-bold text-right outline-none cursor-pointer"
+                                          >
+                                            {r.summary.name}
+                                          </button>
+                                        </td>
+                                        <td className="p-3 text-slate-500 font-semibold">{r.summary.job || 'غير محدد'}</td>
+                                        <td className="p-3 text-center font-bold">{r.summary.work}</td>
+                                        <td className="p-3 text-center font-bold text-emerald-600">{r.summary.present}</td>
+                                        <td className="p-3 text-center font-bold text-blue-600">{r.summary.excuse}</td>
+                                        <td className="p-3 text-center font-bold text-rose-600">{r.summary.absence}</td>
+                                        <td className="p-3 text-center font-semibold text-amber-600">{r.summary.lateCount}</td>
+                                        <td className="p-3 text-center font-semibold text-amber-700">{r.summary.lateMins} د</td>
+                                        <td className="p-3 text-center font-semibold text-rose-500">
+                                          {r.summary.earlyCount + r.summary.autoCount}
+                                        </td>
+                                        <td className="p-3 text-center font-black text-slate-900">{r.summary.rate}%</td>
+                                        <td className="p-3 text-center">
+                                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
+                                            (r.summary.rate || 0) >= 95 ? 'bg-emerald-100 text-emerald-800' :
+                                            (r.summary.rate || 0) >= 85 ? 'bg-blue-100 text-blue-800' :
+                                            (r.summary.rate || 0) >= 75 ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
+                                          }`}>
+                                            {r.summary.rating || 'غير محدد'}
+                                          </span>
+                                        </td>
+                                        <td className="p-3 text-center">
+                                          <button
+                                            onClick={() => setMonthlyEmployee(r.summary.name)}
+                                            className="bg-slate-100 hover:bg-teal-50 hover:text-teal-700 text-slate-700 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all inline-flex items-center gap-1 cursor-pointer"
+                                          >
+                                            <span>تفاصيل الملف</span>
+                                            <span>←</span>
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    ))
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()
                   ) : (
                     (() => {
-                      const rep = getIndividualReport(monthlyEmployee, monthlyMonth);
+                      const rep = monthlyPeriodType === 'range'
+                        ? getIndividualReport(monthlyEmployee, 'all', monthlyStartDate, monthlyEndDate)
+                        : getIndividualReport(monthlyEmployee, monthlyMonth);
                       const m = rep.summary;
 
                       const getDatesForCard = (filterName: string) => {
