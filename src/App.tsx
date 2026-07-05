@@ -1218,14 +1218,35 @@ export default function App() {
   }).length;
 
   // Calculations for Absence Tab Statistics
-  const allSchoolAbsences = dailyRecords.filter(r => r.type === 'absence' && (selectedMonth === 'all' || r.month === selectedMonth));
+  const allSchoolAbsences = dailyRecords.filter(r => {
+    const matchType = r.type === 'absence';
+    let matchPeriod = true;
+    if (selectedPeriodType === 'range') {
+      const dk = dateKey(r.date);
+      const matchStart = !selectedStartDate || dk >= selectedStartDate;
+      const matchEnd = !selectedEndDate || dk <= selectedEndDate;
+      matchPeriod = matchStart && matchEnd;
+    } else {
+      matchPeriod = selectedMonth === 'all' || r.month === selectedMonth;
+    }
+    return matchType && matchPeriod;
+  });
   const uniqueSchoolAbsentNames = Array.from(new Set(allSchoolAbsences.map(r => r.name)));
   
-  const selectedEmployeeAbsences = dailyRecords.filter(r => 
-    r.type === 'absence' && 
-    (selectedMonth === 'all' || r.month === selectedMonth) && 
-    r.name === selectedEmployee
-  );
+  const selectedEmployeeAbsences = dailyRecords.filter(r => {
+    const matchType = r.type === 'absence';
+    const matchEmployee = r.name === selectedEmployee;
+    let matchPeriod = true;
+    if (selectedPeriodType === 'range') {
+      const dk = dateKey(r.date);
+      const matchStart = !selectedStartDate || dk >= selectedStartDate;
+      const matchEnd = !selectedEndDate || dk <= selectedEndDate;
+      matchPeriod = matchStart && matchEnd;
+    } else {
+      matchPeriod = selectedMonth === 'all' || r.month === selectedMonth;
+    }
+    return matchType && matchEmployee && matchPeriod;
+  });
   const currentEmpSummaryInAbsence = getAggregatedActiveSummaries().find(s => s.name === selectedEmployee);
 
   // 8. Individual aggregate generator
@@ -2098,7 +2119,11 @@ export default function App() {
         </div>
 
         <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-bottom: 20px; font-size:13px; font-weight: bold; color: #0f766e;">
-          الشهر المستهدف: ${selectedMonth === 'all' ? 'جميع الأشهر' : selectedMonth}
+          ${selectedPeriodType === 'range'
+            ? `الفترة المستهدفة: من ${selectedStartDate || 'البداية'} إلى ${selectedEndDate || 'النهاية'}`
+            : (selectedMonth === 'all' 
+              ? 'الفترة المستهدفة: جميع الأشهر المسجلة' 
+              : `الشهر المستهدف: ${selectedMonth}`)}
         </div>
 
         <table>
@@ -2161,7 +2186,14 @@ export default function App() {
         <div class="header">
           <h2>مدرسة الجشة المتوسطة - إدارة التعليم بالأحساء</h2>
           <h3>سجل الحضور والمنسوبين</h3>
-          <p>الفترة: ${selectedMonth === 'all' ? 'جميع الأشهر' : selectedMonth} | تاريخ التصدير: ${new Date().toLocaleDateString('ar-SA')}</p>
+          <p>
+            ${selectedPeriodType === 'range'
+              ? `الفترة المستهدفة: من ${selectedStartDate || 'البداية'} إلى ${selectedEndDate || 'النهاية'}`
+              : (selectedMonth === 'all' 
+                ? 'الفترة المستهدفة: جميع الأشهر المسجلة' 
+                : `الشهر المستهدف: ${selectedMonth}`)}
+            | تاريخ التصدير: ${new Date().toLocaleDateString('ar-SA')}
+          </p>
         </div>
 
         <table class="table">
@@ -2757,7 +2789,9 @@ export default function App() {
 
                       {selectedPeriodType === 'month' ? (
                         <div>
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1">الشهر المستهدف</label>
+                          <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                            {selectedMonth === 'all' ? 'الفترة المستهدفة' : 'الشهر المستهدف'}
+                          </label>
                           <select
                             value={selectedMonth}
                             onChange={(e) => setSelectedMonth(e.target.value)}
@@ -3392,7 +3426,9 @@ export default function App() {
 
                       {selectedPeriodType === 'month' ? (
                         <div>
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1">الشهر المستهدف</label>
+                          <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                            {selectedMonth === 'all' ? 'الفترة المستهدفة' : 'الشهر المستهدف'}
+                          </label>
                           <select
                             value={selectedMonth}
                             onChange={(e) => setSelectedMonth(e.target.value)}
@@ -3588,7 +3624,9 @@ export default function App() {
                   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-4">
                     <div className="flex flex-wrap items-center gap-3">
                       <div>
-                        <label className="block text-[10px] font-bold text-slate-400 mb-1">الشهر المستهدف</label>
+                        <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                          {selectedMonth === 'all' ? 'الفترة المستهدفة' : 'الشهر المستهدف'}
+                        </label>
                         <select
                           value={selectedMonth}
                           onChange={(e) => setSelectedMonth(e.target.value)}
@@ -3767,7 +3805,9 @@ export default function App() {
                   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-4">
                     <div className="flex flex-wrap items-center gap-3">
                       <div>
-                        <label className="block text-[10px] font-bold text-slate-400 mb-1">الشهر المستهدف</label>
+                        <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                          {selectedMonth === 'all' ? 'الفترة المستهدفة' : 'الشهر المستهدف'}
+                        </label>
                         <select
                           value={selectedMonth}
                           onChange={(e) => setSelectedMonth(e.target.value)}
@@ -3889,7 +3929,9 @@ export default function App() {
                   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-4">
                     <div className="flex flex-wrap items-center gap-3">
                       <div>
-                        <label className="block text-[10px] font-bold text-slate-400 mb-1">الشهر المستهدف</label>
+                        <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                          {selectedMonth === 'all' ? 'الفترة المستهدفة' : 'الشهر المستهدف'}
+                        </label>
                         <select
                           value={selectedMonth}
                           onChange={(e) => setSelectedMonth(e.target.value)}
